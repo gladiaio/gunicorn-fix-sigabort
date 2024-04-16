@@ -190,9 +190,13 @@ class Arbiter(object):
         signal.signal(signal.SIGCHLD, self.handle_chld)
 
     def signal(self, sig, frame):
+        self.log.info(f"Signal handler received signal {sig}")
         if len(self.SIG_QUEUE) < 5:
+            self.log.info("Signal added to queue")
             self.SIG_QUEUE.append(sig)
             self.wakeup()
+        else:
+            self.log.info("Signal discarded (full queue)")
 
     def run(self):
         "Main master loop."
@@ -240,6 +244,7 @@ class Arbiter(object):
 
     def handle_chld(self, sig, frame):
         "SIGCHLD handling"
+        self.log.info("Received signal SIGCHLD")
         self.reap_workers()
         self.wakeup()
 
@@ -332,6 +337,7 @@ class Arbiter(object):
         """\
         Wake up the arbiter by writing to the PIPE
         """
+        self.log.info("Waking up arbitrer")
         try:
             os.write(self.PIPE[1], b'.')
         except IOError as e:
@@ -361,13 +367,12 @@ class Arbiter(object):
             ready = select.select([self.PIPE[0]], [], [], 1.0)
             if not ready[0]:
                 return
-            self.log.info("Arbiter begin to sleep")
             while os.read(self.PIPE[0], 1):
                 pass
-            self.log.info("Arbiter.py: Arbiter stopped sleeping")
+            self.log.info("Arbiter awakens")
         except (select.error, OSError) as e:
             # TODO: select.error is a subclass of OSError since Python 3.3.
-            self.log.info(f"Arbiter.py: Error during arbiter sleep: {e}")
+            self.log.info(f"Arbiter.py: Error during arbiter awakening: {e}")
             error_number = getattr(e, 'errno', e.args[0])
             if error_number not in [errno.EAGAIN, errno.EINTR]:
                 raise
@@ -381,6 +386,9 @@ class Arbiter(object):
         :attr graceful: boolean, If True (the default) workers will be
         killed gracefully  (ie. trying to wait for the current connection)
         """
+        self.log.info(
+            f"stop() called, graceful={graceful}"
+        )
         unlink = (
             self.reexec_pid == self.master_pid == 0
             and not self.systemd
@@ -394,11 +402,13 @@ class Arbiter(object):
             sig = signal.SIGQUIT
         limit = time.time() + self.cfg.graceful_timeout
         # instruct the workers to exit
+        self.log.info(f"Sending {sig} signal to worker processes")
         self.kill_workers(sig)
         # wait until the graceful timeout
         while self.WORKERS and time.time() < limit:
             time.sleep(0.1)
 
+        self.log.info("Sending SIGKILL to worker processes")
         self.kill_workers(signal.SIGKILL)
 
     def reexec(self):
@@ -505,7 +515,12 @@ class Arbiter(object):
                 continue
 
             if not worker.aborted:
-                self.log.critical(f"WORKER TIMEOUT (pid:{pid}), last update: {worker.tmp.last_update()} ({time.time() - worker.tmp.last_update()} > {self.timeout})")
+                self.log.critical(
+                    f"WORKER TIMEOUT (pid:{pid}), "
+                    f"last update: {worker.tmp.last_update()} "
+                    f"({time.time() - worker.tmp.last_update()}"
+                    f" > {self.timeout})"
+                )
                 worker.aborted = True
                 self.kill_worker(pid, signal.SIGABRT)
             else:
@@ -607,7 +622,9 @@ class Arbiter(object):
 
         # Process Child
         worker.pid = os.getpid()
-        self.log.info(f"Arbiter.py: Spawn new worker with pid {worker.pid} and timeout = {self.timeout} / 2 = {self.timeout / 2.0}")
+        self.log.info(
+            f"Arbiter.py: Spawn new worker with pid {worker.pid} "
+            f"and timeout = {self.timeout} / 2 = {self.timeout / 2.0}")
         try:
             util._setproctitle("worker [%s]" % self.proc_name)
             self.log.info("Booting worker with pid: %s", worker.pid)
@@ -668,6 +685,9 @@ class Arbiter(object):
          """
         try:
             os.kill(pid, sig)
+            self.log.info(
+                f"Worker process pid={pid} was sent signal {sig}"
+            )
         except OSError as e:
             if e.errno == errno.ESRCH:
                 try:
